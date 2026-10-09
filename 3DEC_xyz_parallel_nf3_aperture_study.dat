@@ -1,0 +1,770 @@
+; =========================================================
+; 3DEC 3D XYZ DUAL-WELL, THREE-PARALLEL-FRACTURE THM APERTURE STUDY
+; Native 3DEC command-and-FISH implementation; no external scripting runtime.
+; 3DEC uses physical x, y, and z coordinates.
+;
+; Restores the three-fracture, 1.00 m-spacing geometry and retains the
+; established dual-well HM workflow and adds a staggered thermal phase.
+; Fracture contacts are classified as
+; PF_1, PF_2, and PF_3 in slot 20 and receive independent apertures while
+; well grouping, flow scaling, fast-flow activation, and diagnostics remain
+; consistent with the baseline FM template.
+; =========================================================
+
+; =========================================================
+; USER CASE SELECTION
+; =========================================================
+[case_tag = 'xyz_parallel_nf3_sp100cm_aperture_study']
+[model_file = '3DEC_xyz_parallel_fractures_nf3_doublewell_unimesh.3dsav']
+
+model restore [model_file]
+
+; =========================================================
+; PARAMETERS
+; =========================================================
+fish define parameter
+    global vers = 1
+    global r_dens = 2600.0
+    global r_emod = 71e8
+    global r_pois = 0.373
+    global well_restore_emod = 71e9
+    global tens_m = 11e6
+    global coh_m  = 18e6
+    global fric_m = 52.0
+    global tens_res = 0.001 * tens_m
+    global coh_res  = 0.001 * coh_m
+    global fric_res = 0.25  * fric_m
+    global tens_res_i = 8e6
+    global coh_res_i  = 18e6
+    global fric_res_i = 52.0
+    global f_den = 1000.0
+    global f_visc = 1e-3
+    global pp0    = 0.0
+    ; 3DEC flowplanes use aperture and viscosity directly in the cubic law.
+    global K = r_emod / (3.0 * (1.0 - 2.0 * r_pois))
+    global G = r_emod / (2.0 * (1.0 + r_pois))
+    global d_min = 0.1
+    global stiff = (K + 4.0 * G / 3.0) / d_min
+    global kn_ = stiff
+    global ks_ = 0.5 * kn_
+    global fbulk = r_emod * 0.6e-5 * 1.0
+    global sxx0 = -23.8e6
+    global syy0 = -14.0e6
+    global szz0 = -24.1e6
+    global szz_top = szz0
+    global z_top_load = 0.0
+    global top_load_tol = 0.05
+    global x_min = -9.9
+    global x_max =  9.9
+    global z_min = -30.1
+    global z_max =   0.1
+    global x_INJ = -3.0
+    global y_INJ =  0.0
+    global x_PRD =  3.0
+    global y_PRD =  0.0
+    ; Three-fracture geometry: z = -18.5, -17.5, -16.5 m.
+    global n_frac = 3
+    global frac_spacing = 1.00
+    global open_interval_edge_margin = 1.0
+    global z_injection_center = -17.5
+    global open_interval_half_height = 0.5 * (n_frac - 1) * frac_spacing + open_interval_edge_margin
+    global z_open_top = z_injection_center + open_interval_half_height
+    global z_open_bot = z_injection_center - open_interval_half_height
+
+    ; The geometry extends every fracture 10% of the well spacing beyond each well.
+    global frac_trace_margin_ratio = 0.10
+    global frac_trace_margin = frac_trace_margin_ratio * (x_PRD - x_INJ)
+    global frac_trace = (x_PRD - x_INJ) + 2.0 * frac_trace_margin
+    global frac_origin_x = x_INJ - frac_trace_margin
+    global fracture_group_tolerance = 0.02
+
+    ; Independent hydraulic apertures for the three fractures (m).
+    ; PF_1: z=-18.5 m; PF_2: z=-17.5 m; PF_3: z=-16.5 m.
+    global ap_rockmass = 1e-5
+    global ap_PF_1 = 1e-5
+    global ap_PF_2 = 5e-5
+    global ap_PF_3 = 2e-5
+
+    global open_borehole_half  = 0.055
+    global inner_borehole_half = 0.037
+    ;global inject_half_x       = 0.004
+    global flowknot_radius       = 0.055
+    global flowknot_z_pad = 0.02
+    global fluid_timestep = 1e-5
+    global step_size = 0.2 ;step_size = 0.2
+    global run_stop_time = 306.8
+    global filename = 'Data_17a_02s_0291-2588s.txt' ;filename_ = 'Data_17a_02s_0291-2588s.txt'
+    global flow_scale = 0.000017
+    global use_produce_pressure_control = 0
+
+    ; THM controls and provisional SI thermal properties.  These values must
+    ; be calibrated for the target rock and fluid before interpretation.
+    global use_thermal = 1
+    global rock_thermal_conductivity = 2.5
+    global rock_specific_heat = 850.0
+    global rock_thermal_expansion = 1.0e-5
+    global fluid_specific_heat = 4180.0
+    global fluid_thermal_conductivity = 0.60
+    ; Start within the 1--100 W/(m^2 K) range exercised by the official
+    ; fluid/rock heat-transfer example; this is not a calibrated value.
+    global fluid_rock_heat_transfer = 10.0
+    global rock_temperature_initial = 60.0
+    global fluid_temperature_initial = 60.0
+    global injection_temperature = 20.0
+    global thermal_timestep = 0.20
+end
+[parameter]
+
+model large-strain off
+block mechanical damping global 0.5 0.99 1.05
+block fluid crack-flow on
+
+fish define group_contacts_xyz
+    loop foreach local c block.subcontact.list
+        block.subcontact.group(c,'4') = 'rockmass'
+        local cx = block.subcontact.pos.x(c)
+        local cy = block.subcontact.pos.y(c)
+        local cz = block.subcontact.pos.z(c)
+        if math.sqrt((cx-x_INJ)^2 + (cy-y_INJ)^2) < open_borehole_half then
+            if cz < z_open_top then
+                if cz > z_open_bot then
+                    block.subcontact.group(c,'2') = 'open_borehole_INJ'
+                    ;block.subcontact.group(c,'4') = ''
+                endif
+            endif
+        endif
+        if math.sqrt((cx-x_PRD)^2 + (cy-y_PRD)^2) < open_borehole_half then
+            if cz < z_open_top then
+                if cz > z_open_bot then
+                    block.subcontact.group(c,'2') = 'open_borehole_PRD'
+                    ;block.subcontact.group(c,'4') = ''
+                endif
+            endif
+        endif
+
+        ; Identify the three horizontal fractures in slot 20. Direct clearing
+        ; of slot 4 remains disabled; explicit remove commands follow the loop.
+        if cx >= frac_origin_x then
+            if cx <= frac_origin_x + frac_trace then
+                loop local i (1,n_frac)
+                    local z_frac_ = z_injection_center + ...
+                        (i - 0.5 * (n_frac + 1)) * frac_spacing
+                    if math.abs(cz - z_frac_) <= fracture_group_tolerance then
+                        block.subcontact.group(c,'20') = 'PF_' + string(i)
+                        ;block.subcontact.group(c,'4') = ''
+                    endif
+                endloop
+            endif
+        endif
+    endloop
+end
+[group_contacts_xyz]
+
+block contact group 'rockmass' remove slot '4' range group 'open_borehole_INJ' slot '2'
+block contact group 'rockmass' remove slot '4' range group 'open_borehole_PRD' slot '2'
+block contact group 'rockmass' remove slot '4' range group 'PF_1' slot '20'
+block contact group 'rockmass' remove slot '4' range group 'PF_2' slot '20'
+block contact group 'rockmass' remove slot '4' range group 'PF_3' slot '20'
+
+fish define group_wall_and_inner_borehole_xyz
+    loop foreach local c block.subcontact.list
+        local cx = block.subcontact.pos.x(c)
+        local cy = block.subcontact.pos.y(c)
+        if block.subcontact.group(c,'2') = 'open_borehole_INJ' then
+            block.subcontact.group(c) = 'wall_INJ'
+            if math.sqrt((cx-x_INJ)^2 + (cy-y_INJ)^2) < inner_borehole_half then
+                block.subcontact.group(c) = 'inner_borehole_INJ'
+            endif
+        endif
+        if block.subcontact.group(c,'2') = 'open_borehole_PRD' then
+            block.subcontact.group(c) = 'wall_PRD'
+            if math.sqrt((cx-x_PRD)^2 + (cy-y_PRD)^2) < inner_borehole_half then
+                block.subcontact.group(c) = 'inner_borehole_PRD'
+            endif
+        endif
+    endloop
+end
+[group_wall_and_inner_borehole_xyz]
+
+fish define count_well_contacts_xyz
+    global n_open_borehole_inj = 0
+    global n_open_borehole_prd = 0
+    global n_pf_1 = 0
+    global n_pf_2 = 0
+    global n_pf_3 = 0
+    loop foreach local c block.subcontact.list
+        if block.subcontact.group(c,'2') = 'open_borehole_INJ' then
+            n_open_borehole_inj = n_open_borehole_inj + 1
+        endif
+        if block.subcontact.group(c,'2') = 'open_borehole_PRD' then
+            n_open_borehole_prd = n_open_borehole_prd + 1
+        endif
+        if block.subcontact.group(c,'20') = 'PF_1' then
+            n_pf_1 = n_pf_1 + 1
+        endif
+        if block.subcontact.group(c,'20') = 'PF_2' then
+            n_pf_2 = n_pf_2 + 1
+        endif
+        if block.subcontact.group(c,'20') = 'PF_3' then
+            n_pf_3 = n_pf_3 + 1
+        endif
+    endloop
+    io.out('Open-borehole INJ/PRD contacts: ' + string(n_open_borehole_inj) + ' / ' + string(n_open_borehole_prd))
+    io.out('PF_1/PF_2/PF_3 contacts: ' + string(n_pf_1) + ' / ' + string(n_pf_2) + ' / ' + string(n_pf_3))
+    io.out('PF apertures (m): ' + string(ap_PF_1) + ' / ' + string(ap_PF_2) + ' / ' + string(ap_PF_3))
+    if n_open_borehole_inj < 1 then
+        io.out('WARNING: no open_borehole_INJ contacts found.')
+    endif
+    if n_open_borehole_prd < 1 then
+        io.out('WARNING: no open_borehole_PRD contacts found.')
+    endif
+    if n_pf_1 < 1 then
+        io.out('ERROR: no PF_1 contacts found.')
+        exit
+    endif
+    if n_pf_2 < 1 then
+        io.out('ERROR: no PF_2 contacts found.')
+        exit
+    endif
+    if n_pf_3 < 1 then
+        io.out('ERROR: no PF_3 contacts found.')
+        exit
+    endif
+end
+[count_well_contacts_xyz]
+
+fish define group_well_flowknots_xyz
+    loop foreach local d flowknot.list
+        local dx = flowknot.pos.x(d)
+        local dy = flowknot.pos.y(d)
+        local dz = flowknot.pos.z(d)
+        if math.sqrt((dx-x_INJ)^2 + (dy-y_INJ)^2) <= flowknot_radius then
+            if dz <= z_open_top + flowknot_z_pad then
+                if dz >= z_open_bot - flowknot_z_pad then
+                    flowknot.group(d,'5') = 'inject'
+                endif
+            endif
+        endif
+        if math.sqrt((dx-x_PRD)^2 + (dy-y_PRD)^2) <= flowknot_radius then
+            if dz <= z_open_top + flowknot_z_pad then
+                if dz >= z_open_bot - flowknot_z_pad then
+                    flowknot.group(d,'5') = 'produce'
+                endif
+            endif
+        endif
+    endloop
+end
+
+[group_well_flowknots_xyz]
+
+fish define count_well_flowknots_xyz
+    global n_inject_flowknot = 0
+    global n_produce_flowknot = 0
+    loop foreach local d flowknot.list
+        if flowknot.group(d,'5') = 'inject' then
+            n_inject_flowknot = n_inject_flowknot + 1
+        endif
+        if flowknot.group(d,'5') = 'produce' then
+            n_produce_flowknot = n_produce_flowknot + 1
+        endif
+    endloop
+    io.out('Number of inject flowknots: ' + string(n_inject_flowknot))
+    io.out('Number of produce flowknots: ' + string(n_produce_flowknot))
+    if n_inject_flowknot < 1 then
+        io.out('ERROR: no inject flowknots found in the physical XYZ open interval.')
+        exit
+    endif
+    if n_produce_flowknot < 1 then
+        io.out('ERROR: no produce flowknots found in the physical XYZ open interval.')
+        exit
+    endif
+end
+[count_well_flowknots_xyz]
+
+; Configure the solid and fracture-fluid thermal problem after the geometry
+; has been restored and the well flowknots have been identified.  Unspecified
+; exterior rock boundaries remain adiabatic.  The production well is not
+; assigned a temperature and therefore remains a thermal observation well.
+fish define setup_thermal_xyz
+    if use_thermal # 0 then
+        command
+            block zone thermal property conductivity [rock_thermal_conductivity] ...
+                specific-heat [rock_specific_heat] expansion [rock_thermal_expansion]
+            block gridpoint initialize temperature [rock_temperature_initial]
+            block fluid property specific-heat [fluid_specific_heat] ...
+                thermal-conductivity [fluid_thermal_conductivity] ...
+                heat-transfer-coefficient [fluid_rock_heat_transfer]
+            block insitu fluid-temperature [fluid_temperature_initial]
+            flowknot apply temperature [injection_temperature] ...
+                range group 'inject' slot '5'
+            block thermal convection on
+            block thermal implicit on
+            model thermal timestep fix [thermal_timestep]
+            model thermal active off
+        endcommand
+        io.out('THM thermal properties and injection-temperature boundary assigned.')
+    endif
+end
+[setup_thermal_xyz]
+
+block zone cmodel assign elastic
+block zone property density [r_dens] young [r_emod] poisson [r_pois]
+block contact jmodel assign mohr
+block contact property stiffness-normal [kn_] stiffness-shear [ks_] ...
+    tension [tens_m] cohesion [coh_m] friction [fric_m] ...
+    tension-residual [tens_res] cohesion-residual [coh_res] ...
+    friction-residual [fric_res]
+
+; Native 3DEC flowplane-vertex apertures, independently assigned by fracture.
+flowplane vertex property aperture-initial [ap_rockmass] ...
+    aperture-minimum [ap_rockmass] aperture-maximum [200.0*ap_rockmass]
+flowplane vertex property aperture-initial [ap_PF_1] aperture-minimum [ap_PF_1] ...
+    aperture-maximum [200.0*ap_PF_1] ...
+    range group 'PF_1' slot '20'
+flowplane vertex property aperture-initial [ap_PF_2] aperture-minimum [ap_PF_2] ...
+    aperture-maximum [200.0*ap_PF_2] ...
+    range group 'PF_2' slot '20'
+flowplane vertex property aperture-initial [ap_PF_3] aperture-minimum [ap_PF_3] ...
+    aperture-maximum [200.0*ap_PF_3] ...
+    range group 'PF_3' slot '20'
+block fluid property density [f_den] viscosity [f_visc]
+block face apply stress-zz [szz_top] range position-z [z_top_load] tolerance [top_load_tol]
+block gridpoint apply velocity-x 0 range position-x -9.9 9.9 not
+block gridpoint apply velocity-y 0 range position-y -9.9 9.9 not
+block gridpoint apply velocity 0 0 0 range position-z -30.1 -29.9
+block insitu stress [sxx0] [syy0] [szz_top] 0 0 0 nodisplacements
+block insitu pore-pressure [pp0]
+model fluid active off
+model mechanical active on
+block fluid property bulk 0
+model history mechanical unbalanced-maximum
+model solve ratio-average 1e-5
+
+block gridpoint initialize displacement 0 0 0
+block contact reset displacement
+block zone initialize stress-xx 0 stress-xy 0 stress-xz 0 stress-yy 0 stress-yz 0 stress-zz 0 range group 'Bohrloch' slot '10'
+block zone initialize stress-xx 0 stress-xy 0 stress-xz 0 stress-yy 0 stress-yz 0 stress-zz 0 range group 'Inject' slot '12'
+block zone initialize stress-xx 0 stress-xy 0 stress-xz 0 stress-yy 0 stress-yz 0 stress-zz 0 range group 'Produce' slot '12'
+block zone property young 1000 density 10 range group 'Bohrloch' slot '10'
+block zone property young 1000 density 10 range group 'Inject' slot '12'
+block zone property young 1000 density 10 range group 'Produce' slot '12'
+model solve ratio-average 1e-5
+
+block zone initialize stress-xx 0 stress-xy 0 stress-xz 0 stress-yy 0 stress-yz 0 stress-zz 0 range group 'Bohrloch' slot '10'
+block zone initialize stress-xx 0 stress-xy 0 stress-xz 0 stress-yy 0 stress-yz 0 stress-zz 0 range group 'Inject' slot '12'
+block zone initialize stress-xx 0 stress-xy 0 stress-xz 0 stress-yy 0 stress-yz 0 stress-zz 0 range group 'Produce' slot '12'
+block zone property young [well_restore_emod] density 10 range group 'Bohrloch' slot '10'
+block zone property young [well_restore_emod] density 10 range group 'Inject' slot '12'
+block zone property young [well_restore_emod] density 10 range group 'Produce' slot '12'
+model solve ratio-average 1e-5
+
+block zone initialize stress-xx 0 stress-xy 0 stress-xz 0 stress-yy 0 stress-yz 0 stress-zz 0 range group 'Bohrloch' slot '10'
+block zone initialize stress-xx 0 stress-xy 0 stress-xz 0 stress-yy 0 stress-yz 0 stress-zz 0 range group 'Inject' slot '12'
+block zone initialize stress-xx 0 stress-xy 0 stress-xz 0 stress-yy 0 stress-yz 0 stress-zz 0 range group 'Produce' slot '12'
+model solve ratio-average 1e-5
+
+block zone property density [f_den] range group 'Inject' slot '12'
+block zone property density [f_den] range group 'Produce' slot '12'
+model solve ratio-average 1e-5
+
+[water_save = '3DEC_XYZ_SZZair_parallel_nf3_sp100cm_NUA10-50-20um_dual_well_PRDflow.3dsav']
+model save [water_save]
+
+; No packer contacts or packer material are used in the simplified geometry.
+[ini_save = '3DEC_XYZ_HM_initialized_parallel_nf3_sp100cm_NUA10-50-20um_dual_well_PRDflow.3dsav']
+model save [ini_save]
+
+fish define set_contact_states_xyz
+    loop foreach local c block.subcontact.list
+        if block.subcontact.group(c,'2') = 'open_borehole_INJ' then
+            block.subcontact.state(c) = 2
+        else
+            if block.subcontact.group(c,'2') = 'open_borehole_PRD' then
+                block.subcontact.state(c) = 2
+            else
+                block.subcontact.state(c) = 0
+            endif
+        endif
+    endloop
+end
+block contact property stiffness-normal [kn_] stiffness-shear [ks_] ...
+    tension [tens_m] cohesion [coh_m] friction [fric_m] ...
+    friction-residual [fric_res_i] ...
+    range group 'open_borehole_INJ' slot '2'
+block contact property stiffness-normal [kn_] stiffness-shear [ks_] ...
+    tension [tens_m] cohesion [coh_m] friction [fric_m] ...
+    friction-residual [fric_res_i] ...
+    range group 'open_borehole_PRD' slot '2'
+[set_contact_states_xyz]
+
+block gridpoint apply velocity-x 0 velocity-y 0 velocity-z 0 range cylinder end-1 [x_INJ] [y_INJ] -25 end-2 [x_INJ] [y_INJ] -10 radius 0.04
+block gridpoint apply velocity-x 0 velocity-y 0 velocity-z 0 range cylinder end-1 [x_PRD] [y_PRD] -25 end-2 [x_PRD] [y_PRD] -10 radius 0.04
+
+fish define inject_flowknot_pressure_average
+    local n_ = 0
+    local sum_ = 0.0
+    loop foreach local d flowknot.list
+        if flowknot.group(d,'5') = 'inject' then
+            sum_ = sum_ + flowknot.pp(d)
+            n_ = n_ + 1
+        endif
+    endloop
+    inject_flowknot_pressure_average = 0.0
+    if n_ > 0 then
+        inject_flowknot_pressure_average = sum_ / n_
+    endif
+end
+
+fish define produce_flowknot_pressure_average
+    local n_ = 0
+    local sum_ = 0.0
+    loop foreach local d flowknot.list
+        if flowknot.group(d,'5') = 'produce' then
+            sum_ = sum_ + flowknot.pp(d)
+            n_ = n_ + 1
+        endif
+    endloop
+    produce_flowknot_pressure_average = 0.0
+    if n_ > 0 then
+        produce_flowknot_pressure_average = sum_ / n_
+    endif
+end
+
+fish define report_well_flowknot_pressure
+    local n_inj_ = 0
+    local n_prd_ = 0
+    local sum_inj_ = 0.0
+    local sum_prd_ = 0.0
+    loop foreach local d flowknot.list
+        if flowknot.group(d,'5') = 'inject' then
+            n_inj_ = n_inj_ + 1
+            sum_inj_ = sum_inj_ + flowknot.pp(d)
+            io.out('INJ flowknot=' + string(d) + '; x=' + string(flowknot.pos.x(d)) + ...
+                   '; y=' + string(flowknot.pos.y(d)) + '; z=' + string(flowknot.pos.z(d)) + '; pp=' + string(flowknot.pp(d)))
+        endif
+        if flowknot.group(d,'5') = 'produce' then
+            n_prd_ = n_prd_ + 1
+            sum_prd_ = sum_prd_ + flowknot.pp(d)
+            io.out('PRD flowknot=' + string(d) + '; x=' + string(flowknot.pos.x(d)) + ...
+                   '; y=' + string(flowknot.pos.y(d)) + '; z=' + string(flowknot.pos.z(d)) + '; pp=' + string(flowknot.pp(d)))
+        endif
+    endloop
+    if n_inj_ > 0 then
+        io.out('Average INJ pressure = ' + string(sum_inj_ / n_inj_))
+    endif
+    if n_prd_ > 0 then
+        io.out('Average PRD pressure = ' + string(sum_prd_ / n_prd_))
+    endif
+end
+
+[io.out('DIAGNOSTIC STEP 1: initial well-flowknot selection and pressure')]
+[report_well_flowknot_pressure]
+
+fish define set_inject_test_pressure(test_pressure_)
+    loop foreach local d flowknot.list
+        if flowknot.group(d,'5') = 'inject' then
+            flowknot.pp(d) = test_pressure_
+        endif
+    endloop
+end
+
+history purge
+history interval 1000
+block contact history name 's_normal_INJ' stress-normal position [x_INJ+0.05] [0.0] [z_injection_center]
+block contact history name 's_shear_INJ' stress-shear position [x_INJ+0.05] [0.0] [z_injection_center]
+block contact history name 'd_normal_INJ_005' displacement-normal position [x_INJ+0.05] [0.0] [z_injection_center]
+block contact history name 'd_normal_INJ_050' displacement-normal position [x_INJ+0.50] [0.0] [z_injection_center]
+block contact history name 'd_normal_INJ_075' displacement-normal position [x_INJ+0.75] [0.0] [z_injection_center]
+block contact history name 'd_normal_INJ_100' displacement-normal position [x_INJ+1.00] [0.0] [z_injection_center]
+block contact history name 'd_normal_INJ_150' displacement-normal position [x_INJ+1.50] [0.0] [z_injection_center]
+block contact history name 'd_normal_INJ_200' displacement-normal position [x_INJ+2.00] [0.0] [z_injection_center]
+block contact history name 'd_normal_PRD_005' displacement-normal position [x_PRD-0.05] [0.0] [z_injection_center]
+block contact history name 'd_normal_PRD_050' displacement-normal position [x_PRD-0.50] [0.0] [z_injection_center]
+block contact history name 'd_normal_PRD_075' displacement-normal position [x_PRD-0.75] [0.0] [z_injection_center]
+block contact history name 'd_normal_PRD_100' displacement-normal position [x_PRD-1.00] [0.0] [z_injection_center]
+block contact history name 'd_normal_PRD_150' displacement-normal position [x_PRD-1.50] [0.0] [z_injection_center]
+block contact history name 'd_normal_PRD_200' displacement-normal position [x_PRD-2.00] [0.0] [z_injection_center]
+model history fluid time-total
+model fluid time-total 0
+model history thermal time-total
+model thermal time-total 0
+; Preserve the baseline well and near-wall pressure histories, then add
+; fracture-specific midpoint histories and two representative points at
+; one-quarter and three-quarters of the central INJ-to-PRD path.
+flowknot history name 'inject_pressure' position [x_INJ] [0.0] [z_injection_center] pore-pressure
+flowknot history name 'wall_pressure_INJ' position [x_INJ+0.05] [0.0] [z_injection_center] pore-pressure
+flowknot history name 'PF_1_pressure' position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center-frac_spacing] pore-pressure
+flowknot history name 'PF_2_pressure' position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center] pore-pressure
+flowknot history name 'PF_3_pressure' position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center+frac_spacing] pore-pressure
+flowknot history name 'path_pressure_25pct' position [x_INJ+0.25*(x_PRD-x_INJ)] [0.0] [z_injection_center] pore-pressure
+flowknot history name 'path_pressure_75pct' position [x_INJ+0.75*(x_PRD-x_INJ)] [0.0] [z_injection_center] pore-pressure
+flowknot history name 'produce_pressure' position [x_PRD] [0.0] [z_injection_center] pore-pressure
+flowknot history name 'wall_pressure_PRD' position [x_PRD-0.05] [0.0] [z_injection_center] pore-pressure
+flowknot history name 'inject_temperature' position [x_INJ] [y_INJ] [z_injection_center] temperature
+flowknot history name 'produce_temperature' position [x_PRD] [y_PRD] [z_injection_center] temperature
+flowknot history name 'PF_1_temperature' position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center-frac_spacing] temperature
+flowknot history name 'PF_2_temperature' position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center] temperature
+flowknot history name 'PF_3_temperature' position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center+frac_spacing] temperature
+block history name 'rock_temperature_midpoint' temperature position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center]
+flowplane vertex history name 'PF_1_aperture_hydraulic' aperture-hydraulic ...
+    position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center-frac_spacing]
+flowplane vertex history name 'PF_2_aperture_hydraulic' aperture-hydraulic ...
+    position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center]
+flowplane vertex history name 'PF_3_aperture_hydraulic' aperture-hydraulic ...
+    position [0.5*(x_INJ+x_PRD)] [0.0] [z_injection_center+frac_spacing]
+model history mechanical ratio-average
+model history timestep
+[fl_r_ = 0.0]
+[pi_ = 0.0]
+[inject_well_flow_per_flowknot_ = 0.0]
+[inject_well_flow_total_ = 0.0]
+[n_inject_well_flow_flowknots = 0]
+[produce_well_flow_per_flowknot_ = 0.0]
+[produce_well_flow_total_ = 0.0]
+[n_produce_well_flow_flowknots = 0]
+[commanded_net_well_flow_ = 0.0]
+[bleed_input_ = 0.0]
+fish history name 'flowrate_input' @fl_r_
+fish history name 'interval_pressure' @pi_
+fish history name 'inject_well_flow_per_flowknot_command' @inject_well_flow_per_flowknot_
+fish history name 'inject_well_flow_total_command' @inject_well_flow_total_
+fish history name 'inject_well_flow_flowknot_count' @n_inject_well_flow_flowknots
+fish history name 'produce_well_flow_per_flowknot_command' @produce_well_flow_per_flowknot_
+fish history name 'produce_well_flow_total_command' @produce_well_flow_total_
+fish history name 'produce_well_flow_flowknot_count' @n_produce_well_flow_flowknots
+fish history name 'commanded_net_well_flow' @commanded_net_well_flow_
+fish history name 'bleed_input' @bleed_input_
+fish history name 'inject_flowknot_pressure_average' @inject_flowknot_pressure_average
+fish history name 'produce_flowknot_pressure_average' @produce_flowknot_pressure_average
+
+fish define set_fluid_bulk
+    io.out('Effective fluid bulk modulus: ' + string(fbulk))
+    command
+        block fluid property bulk [fbulk]
+        model fluid active on
+        model mechanical active on
+        model mechanical follower on
+        model mechanical substep 4
+        model fluid substep 1
+        model fluid time-total 290.8
+        model thermal time-total 290.8
+        model thermal active off
+    endcommand
+    io.out('3DEC fluid-mechanical stage activated; thermal clock synchronized.')
+end
+
+; Stagger one measured-data increment in two phases.  First, fluid advances
+; with mechanical follower updates.  Second, the stored fracture-flow field
+; drives thermal convection while mechanics follows thermal expansion.  The
+; next fluid phase therefore uses the thermally updated contact state and
+; aperture, closing the sequential THM feedback loop without advancing either
+; the fluid or thermal clock twice.
+fish define advance_thm_to(target_time_)
+    command
+        model fluid active on
+        model thermal active off
+        model mechanical active on
+        model solve fluid time-total [target_time_]
+    endcommand
+    if use_thermal # 0 then
+        command
+            model fluid active off
+            model thermal active on
+            model mechanical active on
+            model solve thermal time-total [target_time_]
+            model thermal active off
+            model fluid active on
+        endcommand
+    endif
+end
+
+fish define ApplyInjectWellFlow_xyz(flow_per_flowknot_)
+    global n_inject_well_flow_flowknots = n_inject_flowknot
+    global inject_well_flow_per_flowknot_ = flow_per_flowknot_
+    global inject_well_flow_total_ = flow_per_flowknot_ * n_inject_flowknot
+    if flow_per_flowknot_ = 0.0 then
+        command
+            flowknot apply-remove discharge range group 'inject' slot '5'
+        endcommand
+    else
+        command
+            flowknot apply-remove discharge range group 'inject' slot '5'
+            flowknot apply discharge [flow_per_flowknot_] range group 'inject' slot '5'
+        endcommand
+        io.out('inject flowknot count = ' + string(n_inject_flowknot))
+        io.out('commanded injection total flow = ' + string(inject_well_flow_total_))
+    endif
+end
+
+fish define scaled_flowrate(q_input)
+    local q_scaled = q_input * flow_scale
+    if n_inject_flowknot < 1 then
+        io.out('ERROR: no inject flowknots found for flow scaling.')
+        exit
+    endif
+    q_scaled = q_scaled / n_inject_flowknot
+    scaled_flowrate = q_scaled
+end
+
+;fish define scaled_production_flowrate(q_input)
+ ;   if n_produce_flowknot < 1 then
+ ;       io.out('ERROR: no produce flowknots found for flow scaling.')
+ ;       exit
+;    endif
+   ; scaled_production_flowrate = -q_input * flow_scale / n_produce_flowknot
+;end
+
+; =========================================================
+; READ INJECTION DATA
+; File columns: time, Q, interval pressure, unused pressure column, bleed
+; =========================================================
+
+fish define setup_io
+    global max_lines = 100000
+end
+[setup_io]
+
+fish define read_data
+    local f = file.open(filename, 'read', 'text')
+    if status # 0 then
+        io.out('ERROR: file open failed: ' + filename)
+        exit
+    endif
+
+    local raw = file.read(max_lines)
+    status = file.close
+
+    local n_lines = list.size(raw)
+
+    if n_lines < 2 then
+        io.out('ERROR: no data rows found after header in file: ' + filename)
+        exit
+    endif
+
+    if n_lines >= max_lines then
+        io.out('WARNING: input file may exceed max_lines; check file length.')
+    endif
+
+    global n_data = n_lines - 1
+    global t_arr = array(n_data)
+    global Q_arr = array(n_data)
+    global pint_arr = array(n_data)
+    global bleed_arr = array(n_data)
+
+    loop local i (1, n_data)
+        local line = raw(i + 1)
+        t_arr(i)     = float(string.token(line,1))
+        Q_arr(i)     = float(string.token(line,2))
+        pint_arr(i)  = float(string.token(line,3))
+        bleed_arr(i) = float(string.token(line,5))
+    endloop
+
+    io.out('Injection data loaded. n_data = ' + string(n_data))
+end
+
+fish define ApplyWellPressure_xyz(reset_inject_, reset_produce_)
+    global n_well_pressure_flowknots = 0
+    loop foreach local d flowknot.list
+        if reset_inject_ # 0 then
+            if flowknot.group(d,'5') = 'inject' then
+                flowknot.pp(d) = pp0
+                n_well_pressure_flowknots = n_well_pressure_flowknots + 1
+            endif
+        endif
+        if reset_produce_ # 0 then
+            if flowknot.group(d,'5') = 'produce' then
+                flowknot.pp(d) = pp0
+                n_well_pressure_flowknots = n_well_pressure_flowknots + 1
+            endif
+        endif
+    endloop
+end
+
+fish define init_injection_control
+    if n_inject_flowknot < 1 then
+        io.out('ERROR: no inject flowknots found.')
+        exit
+    endif
+    if n_produce_flowknot < 1 then
+        io.out('ERROR: no produce flowknots found.')
+        exit
+    endif
+    global time_ = 290.8
+    global spos_ = 1
+    global n_savetime = 11
+    global savetime_ = array(n_savetime)
+    savetime_(1)  = 511.6
+    savetime_(2)  = 1059.0
+    savetime_(3)  = 1491.6
+    savetime_(4)  = 1984.0
+    savetime_(5)  = 2050.0
+    savetime_(6)  = 2080.0
+    savetime_(7)  = 2120.0
+    savetime_(8)  = 2200.0
+    savetime_(9)  = 2388.0
+    savetime_(10) = 2570.0
+    savetime_(11) = 10000.0
+    io.out('Save-time schedule stored successfully. n_savetime = ' + string(n_savetime))
+    loop local isave (1, n_savetime)
+        io.out('savetime_(' + string(isave) + ') = ' + string(savetime_(isave)) + ' s')
+    endloop
+end
+
+fish define run_injection_loop
+    loop local i (1,n_data)
+        if t_arr(i) > run_stop_time then
+            io.out('Requested stop time reached before input row ' + string(i) + ...
+                   ': next data time = ' + string(t_arr(i)) + ' s.')
+            exit loop
+        endif
+        local q_now = Q_arr(i)
+        local pi_now = pint_arr(i)
+        local b_now = bleed_arr(i)
+        time_ = time_ + step_size
+        local flowrate_ = scaled_flowrate(q_now)
+        ; Injection-only stage: keep the production well passive so its
+        ; pressure history records the hydraulic response without a sink.
+        ;local produce_flowrate_ = scaled_production_flowrate(q_now)
+        io.out('q_now = ' + string(q_now))
+        io.out('flowrate per flowknot = ' + string(flowrate_))
+        ApplyInjectWellFlow_xyz(flowrate_)
+        ;ApplyProduceWellFlow_xyz(produce_flowrate_)
+        commanded_net_well_flow_ = inject_well_flow_total_
+        io.out('commanded injection-only well flow = ' + string(commanded_net_well_flow_))
+        fl_r_ = q_now
+        pi_ = pi_now * 1e6
+        bleed_input_ = b_now
+        advance_thm_to(time_)
+        if i = 1 then
+            io.out('Injection/observation-well pressure after the first flow cycle:')
+            report_well_flowknot_pressure
+        endif
+        ApplyInjectWellFlow_xyz(0.0)
+        ;ApplyProduceWellFlow_xyz(0.0)
+        if spos_ <= n_savetime then
+            if time_ >= savetime_(spos_) then
+                local sav_flow = '3DEC_XYZ_FM_parallel_nf3_sp100cm_NUA10-50-20um_dual_well_PRDflow_v' + string(vers) + '_timestep02sec_' + string(int(time_)) + 'sec.3dsav'
+                command
+                    model save [sav_flow]
+                endcommand
+                spos_ = spos_ + 1
+            endif
+        endif
+    endloop
+    local sav_flow_final = '3DEC_XYZ_FM_parallel_nf3_sp100cm_NUA10-50-20um_dual_well_PRDflow_v' + string(vers) + '_timestep02sec_' + string(int(time_)) + 'sec_final.3dsav'
+    command
+        model save [sav_flow_final]
+    endcommand
+    io.out('Final model saved: ' + sav_flow_final)
+    io.out('Final fluid time: ' + string(time_))
+end
+
+; =========================================================
+; RUN
+; =========================================================
+
+[read_data]
+[init_injection_control]
+[set_fluid_bulk]
+
+[run_injection_loop]
