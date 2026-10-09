@@ -1,0 +1,203 @@
+model new
+model configure thermal fluid
+
+; ============================================================
+; 3DEC 3D XYZ THREE-PARALLEL-FRACTURE GEOMETRY TEMPLATE
+;
+; This is the 3DEC equivalent of the former UDEC XZ template.  The UDEC
+; x-coordinate maps to 3DEC x, and the UDEC y-coordinate (physical z) maps
+; to 3DEC z.  The 3DEC model has a finite width from y = -10 m to y = 10 m,
+; divided into four 5 m-wide bricks.
+;
+; Geometry only: hydraulic aperture, permeability, joint constitutive
+; properties, and subcontact groups remain the responsibility of the
+; downstream fluid-mechanical script.
+; ============================================================
+
+; ============================================================
+; MODEL EXTENT, ROCK BRICKS, AND WELL LOCATIONS
+; ============================================================
+model domain extent -25 25 -25 25 -45 15
+
+[x_l = -10.0]
+[x_r =  10.0]
+[y_0 = -10.0]
+[y_1 =  -5.0]
+[y_2 =   0.0]
+[y_3 =   5.0]
+[y_4 =  10.0]
+[z_b = -30.0]
+[z_t =   0.0]
+
+[x_inj = -3.0]
+[x_prd =  3.0]
+[y_inj = 0.0]
+[y_prd = 0.0]
+[z_well_center = -17.5]
+
+; Three horizontal fracture planes at z = -18.5, -17.5, and -16.5 m.
+[n_frac = 3]
+[frac_spacing = 1.00]
+[frac_dip = 0.0]
+[frac_dip_direction = 0.0]
+
+[frac_trace_margin_ratio = 0.10]
+[frac_trace_margin = frac_trace_margin_ratio * (x_prd - x_inj)]
+[frac_trace = (x_prd - x_inj) + 2.0 * frac_trace_margin]
+[frac_origin_x = x_inj - frac_trace_margin]
+[frac_end_x = frac_origin_x + frac_trace]
+
+; The open interval follows the outermost fractures and retains 1 m of
+; clearance above and below.  It extends from z = -19.5 to -15.5 m.
+[open_interval_edge_margin = 1.00]
+[open_interval_half_height = 0.5 * (n_frac - 1) * frac_spacing + open_interval_edge_margin]
+[z_open_b = z_well_center - open_interval_half_height]
+[z_open_t = z_well_center + open_interval_half_height]
+
+[well_half_width = 0.05]
+[well_half_width_y = 0.05]
+[well_radius = 0.05]
+[fine_xy_half_width = 6.0]
+
+; Following the reference zoning sequence, both well columns are generated
+; first at 0.10 m and every remaining block is then generated uniformly at
+; 0.25 m.  The Mesh groups remain available for an optional graded mesh.
+[mesh_well = 0.10]
+[mesh_uniform = 0.25]
+[mesh_coarse_optional = 0.50]
+
+[tol_general = 0.001]
+[tol_edge = 0.002]
+; 3DEC syntax: the first value is the general model tolerance; edge sets
+; the minimum polygon-edge length accepted by the block cutting logic.
+block tolerance [tol_general] edge [tol_edge]
+
+; Four adjoining bricks reproduce the requested y-direction partitioning.
+; The x range is -10 m to 10 m for the two-well model; z remains unchanged.
+block create brick [x_l] [x_r] [y_0] [y_1] [z_b] [z_t]
+block create brick [x_l] [x_r] [y_1] [y_2] [z_b] [z_t]
+block create brick [x_l] [x_r] [y_2] [y_3] [z_b] [z_t]
+block create brick [x_l] [x_r] [y_3] [y_4] [z_b] [z_t]
+
+; ============================================================
+; TRACE LIMITS AND WELL-REFINEMENT COLUMNS
+; ============================================================
+; A 3DEC cut passes completely through every selected block.  First partition
+; the model at the two fracture-trace ends.  The position-x range on the later
+; horizontal cuts then selects only the blocks between these partitions.
+; Construction surfaces use IDs above 100.  The join keyword reconnects the
+; new faces, so these partitions control block selection and zoning without
+; acting as physical or hydraulic discontinuities.
+block cut joint-set dip 90 dip-direction 90 origin [frac_origin_x] 0 [z_well_center] jointset-id 101 join
+block cut joint-set dip 90 dip-direction 90 origin [frac_end_x] 0 [z_well_center] jointset-id 102 join
+
+; These four vertical planes provide the x boundaries of the local refinement
+; regions.  They bound 0.10 m-wide columns centered at x = -3 m and x = 3 m.
+; They remain necessary because block zone generate assigns a target length to
+; selected whole blocks; a cylinder range alone does not create block borders.
+; Unlike the joined trace-limit partitions, these well faces remain unjoined:
+; the downstream 3DEC FM script classifies their open-interval contacts as the
+; injection and production borehole flow boundaries.
+; Dip direction 90 degrees gives planes whose normals are parallel to +x.
+block cut joint-set dip 90 dip-direction 90 origin [x_inj-well_half_width] 0 [z_well_center] jointset-id 111
+block cut joint-set dip 90 dip-direction 90 origin [x_inj+well_half_width] 0 [z_well_center] jointset-id 112
+block cut joint-set dip 90 dip-direction 90 origin [x_prd-well_half_width] 0 [z_well_center] jointset-id 113
+block cut joint-set dip 90 dip-direction 90 origin [x_prd+well_half_width] 0 [z_well_center] jointset-id 114
+
+; Both wells are currently aligned at y = 0 m, so they share these two planes.
+; The separate y_inj and y_prd parameters below keep the two-well definition
+; explicit.  These planes provide the missing y
+; boundaries, from y = -0.05 m to y = 0.05 m.  Dip direction 0 degrees gives
+; vertical planes whose normals are parallel to +y.  Together with the four
+; x-boundary planes above, they form two 0.10 m by 0.10 m refinement columns.
+block cut joint-set dip 90 dip-direction 0 origin 0 [y_inj-well_half_width_y] [z_well_center] jointset-id 121
+block cut joint-set dip 90 dip-direction 0 origin 0 [y_inj+well_half_width_y] [z_well_center] jointset-id 122
+
+; ============================================================
+; THREE-PARALLEL-FRACTURE SET
+; ============================================================
+[z_frac_1 = z_well_center - frac_spacing]
+[z_frac_2 = z_well_center]
+[z_frac_3 = z_well_center + frac_spacing]
+
+; Dip zero creates horizontal XY planes.  Because the model has already
+; been partitioned at both trace ends, the range selects only blocks in the
+; central trace corridor.  IDs 1, 2, and 3 uniquely identify the physical
+; fracture contacts and separate them from all construction cuts.
+block cut joint-set dip [frac_dip] dip-direction [frac_dip_direction] origin [frac_origin_x] 0 [z_frac_1] jointset-id 1 range position-x [frac_origin_x] [frac_end_x]
+block cut joint-set dip [frac_dip] dip-direction [frac_dip_direction] origin [frac_origin_x] 0 [z_frac_2] jointset-id 2 range position-x [frac_origin_x] [frac_end_x]
+block cut joint-set dip [frac_dip] dip-direction [frac_dip_direction] origin [frac_origin_x] 0 [z_frac_3] jointset-id 3 range position-x [frac_origin_x] [frac_end_x]
+
+; ============================================================
+; BLOCK GROUPS FOR THE DOWNSTREAM FM SCRIPT
+; ============================================================
+; Apply the mesh groups from coarse to fine.  Later assignments in the same
+; slot replace earlier ones: Gebirge fein replaces Gebirge grob in the central
+; 12 m by 12 m region, and the two cylindrical Bohrloch selections replace
+; Gebirge fein only at the wells.
+block group 'Gebirge grob' slot 'Mesh'
+block group 'Gebirge fein' slot 'Mesh' range position-x [-fine_xy_half_width] [fine_xy_half_width] position-y [-fine_xy_half_width] [fine_xy_half_width]
+block group 'Bohrloch' slot 'Mesh' range cylinder end-1 [x_inj] [y_inj] [z_b] end-2 [x_inj] [y_inj] [z_t] radius [well_radius]
+block group 'Bohrloch' slot 'Mesh' range cylinder end-1 [x_prd] [y_prd] [z_b] end-2 [x_prd] [y_prd] [z_t] radius [well_radius]
+
+; Preserve durable well identity and open-interval duties in separate slots.
+; Cylinder ranges represent the physical well radius rather than a rectangular
+; position-x/position-y selection.
+block group 'Bohrloch' slot '10' range cylinder end-1 [x_inj] [y_inj] [z_b] end-2 [x_inj] [y_inj] [z_t] radius [well_radius]
+block group 'Bohrloch' slot '10' range cylinder end-1 [x_prd] [y_prd] [z_b] end-2 [x_prd] [y_prd] [z_t] radius [well_radius]
+block group 'Injektionsbohrung' slot 'Well' range cylinder end-1 [x_inj] [y_inj] [z_b] end-2 [x_inj] [y_inj] [z_t] radius [well_radius]
+block group 'Produktionsbohrung' slot 'Well' range cylinder end-1 [x_prd] [y_prd] [z_b] end-2 [x_prd] [y_prd] [z_t] radius [well_radius]
+block group 'Inject' slot '12' range cylinder end-1 [x_inj] [y_inj] [z_open_b] end-2 [x_inj] [y_inj] [z_open_t] radius [well_radius]
+block group 'Produce' slot '12' range cylinder end-1 [x_prd] [y_prd] [z_open_b] end-2 [x_prd] [y_prd] [z_open_t] radius [well_radius]
+
+; Slot 11 marks the full-width hydraulic-connection corridor between wells.
+[x_refine_l = frac_origin_x]
+[x_refine_r = frac_end_x]
+[z_refine_b = z_open_b]
+[z_refine_t = z_open_t]
+block group 'PARALLEL_FRACTURE_REFINED' slot '11' range position-x [x_refine_l] [x_refine_r] position-z [z_refine_b] [z_refine_t]
+
+; ============================================================
+; GROUP RANGE SUMMARY (CURRENT PARAMETER VALUES)
+; ============================================================
+; Mesh::Gebirge grob
+;   Residual coarse rock inside x = -10..10, y = -10..10, z = -30..0,
+;   excluding blocks overwritten by Gebirge fein and Bohrloch in slot Mesh.
+; Mesh::Gebirge fein
+;   x = -6..6, y = -6..6, z = -30..0, excluding the two Bohrloch cylinders.
+; Mesh::Bohrloch and 10::Bohrloch
+;   Two vertical cylinders of radius 0.05 m and z = -30..0:
+;   injection axis (x,y) = (-3,0), production axis (x,y) = (3,0).
+; Well::Injektionsbohrung
+;   Cylinder radius 0.05 m, axis (x,y) = (-3,0), z = -30..0.
+; Well::Produktionsbohrung
+;   Cylinder radius 0.05 m, axis (x,y) = (3,0), z = -30..0.
+; 12::Inject
+;   Cylinder radius 0.05 m, axis (x,y) = (-3,0), z = -19.5..-15.5.
+; 12::Produce
+;   Cylinder radius 0.05 m, axis (x,y) = (3,0), z = -19.5..-15.5.
+; 11::PARALLEL_FRACTURE_REFINED
+;   x = -3.6..3.6, y = -10..10, z = -19.5..-15.5.
+
+; ============================================================
+; 3D TETRAHEDRAL ZONE GENERATION
+; ============================================================
+; Bohrloch contains both cylindrical wells, so the first command refines the
+; injection and production wells together.  The second command follows the
+; supplied single-well workflow and zones every remaining, unzoned block with
+; one uniform target length.
+block zone generate edgelength [mesh_well] range group 'Bohrloch' slot 'Mesh'
+block zone generate edgelength [mesh_uniform]
+
+; Optional graded alternative: comment out the uniform command above, then
+; enable both commands below.
+;block zone generate edgelength [mesh_uniform] range group 'Gebirge fein' slot 'Mesh'
+;block zone generate edgelength [mesh_coarse_optional] range group 'Gebirge grob' slot 'Mesh'
+
+; ============================================================
+; ZONE COUNT AND SAVE
+; ============================================================
+[nzone = block.zone.num]
+[sf = '3DEC_xyz_parallel_fractures_nf' + string(n_frac) + '_sp' + string(int(frac_spacing*100)) + 'cm_nz' + string(nzone) + '_doublewell_unimesh.3dsav']
+model save [sf]
+model save '3DEC_xyz_parallel_fractures_nf3_doublewell_unimesh.3dsav'
